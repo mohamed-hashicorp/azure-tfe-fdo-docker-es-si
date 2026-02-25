@@ -1,9 +1,9 @@
-## Terraform Enterprise FDO Deployment on Azure using Docker and disk operational mode
+## Terraform Enterprise FDO Deployment on Azure using Docker and external services mode
 
 This repository provides an automated way to deploy Terraform Enterprise (TFE) on Azure using:
 - FDO (Flexible Deployment Options)
 - Docker
-- Disk operational mode
+- External services mode
 - Terraform-based infrastructure automation
 - AWS Route53 to manage DNS records and handle SSL certificate validation for the Azure virtual machine.
 
@@ -22,11 +22,11 @@ This guide was executed on MacOS so it assumes the following:
 ## Clone the repository
 - Clone the Github repo
 ```
-git clone https://github.com/mohamed-hashicorp/azure-tfe-fdo-docker-dm-si.git
+git clone https://github.com/mohamed-hashicorp/azure-tfe-fdo-docker-es-si.git
 ```
 - Change the directory
 ```
-cd azure-tfe-fdo-docker-dm-si
+cd azure-tfe-fdo-docker-es-si
 ```
 
 ## Configure your variables

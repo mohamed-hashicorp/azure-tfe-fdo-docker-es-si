@@ -1,0 +1,227 @@
+#cloud-config
+packages:
+  - git
+  - jq
+  - vim
+  - wget
+  - language-pack-en
+  - curl
+  - zip
+  - unzip
+  - ca-certificates
+
+write_files:
+  - path: "/etc/terraform-enterprise/certs/cert.pem"
+    permissions: "0644"
+    owner: "root:root"
+    content: |
+      ${server_cert}
+
+  - path: "/etc/terraform-enterprise/certs/key.pem"
+    permissions: "0600"
+    owner: "root:root"
+    content: |
+      ${private_key}
+
+  - path: "/etc/terraform-enterprise/certs/bundle.pem"
+    permissions: "0644"
+    owner: "root:root"
+    content: |
+      ${bundle_certs}
+
+  - path: "/etc/terraform-enterprise/registry-token"
+    permissions: "0600"
+    owner: "root:root"
+    content: |
+      ${tfe_license}      
+
+  - path: "/etc/terraform-enterprise/config.yaml"
+    permissions: "0644"
+    owner: "root:root"
+    content: |
+        ---
+        name: terraform-enterprise
+        services:
+          tfe:
+            image: images.releases.hashicorp.com/hashicorp/terraform-enterprise:${tfe_image_tag}
+            environment:
+              TFE_LICENSE: "${tfe_license}"
+              TFE_HOSTNAME: "${tfe_hostname}"
+              TFE_ENCRYPTION_PASSWORD: "${tfe_encryption_password}"
+              TFE_OPERATIONAL_MODE: "external"
+              TFE_DISK_CACHE_VOLUME_NAME: "$${COMPOSE_PROJECT_NAME}_terraform-enterprise-cache"
+              TFE_TLS_CERT_FILE: "/etc/ssl/private/terraform-enterprise/cert.pem"
+              TFE_TLS_KEY_FILE: "/etc/ssl/private/terraform-enterprise/key.pem"
+              TFE_TLS_CA_BUNDLE_FILE: "/etc/ssl/private/terraform-enterprise/bundle.pem"
+              TFE_IACT_SUBNETS: "0.0.0.0/0"
+
+              # Database settings. See the configuration reference for more settings.
+              TFE_DATABASE_USER: "${tfe_db_user}"
+              TFE_DATABASE_PASSWORD: "${tfe_db_password}"
+              TFE_DATABASE_HOST: "${tfe_db_host}:5432"
+              TFE_DATABASE_NAME: "${tfe_db_name}"
+
+              # Object storage settings. See the configuration reference for more settings.
+              TFE_OBJECT_STORAGE_TYPE: "azure"
+              TFE_OBJECT_STORAGE_AZURE_ACCOUNT_NAME: "${tfe_azure_account_name}"
+              TFE_OBJECT_STORAGE_AZURE_ACCOUNT_KEY: "${tfe_azure_account_key}"
+              TFE_OBJECT_STORAGE_AZURE_CONTAINER: "${tfe_azure_container}"
+              TFE_OBJECT_STORAGE_AZURE_ENDPOINT: "blob.core.windows.net"
+            cap_add:
+              - IPC_LOCK
+            read_only: true
+            tmpfs:
+              - /tmp:mode=01777
+              - /run
+              - /var/log/terraform-enterprise
+            ports:
+              - "80:80"
+              - "443:443"
+            volumes:
+              - type: bind
+                source: /var/run/docker.sock
+                target: /run/docker.sock
+              - type: bind
+                source: ./certs
+                target: /etc/ssl/private/terraform-enterprise
+              - type: volume
+                source: terraform-enterprise-cache
+                target: /var/cache/tfe-task-worker/terraform
+        volumes:
+          terraform-enterprise-cache:
+
+  - path: "/etc/terraform-enterprise/registry-token"
+    permissions: "0600"
+    owner: "root:root"
+    content: |
+      ${tfe_license}
+
+  - path: "/etc/terraform-enterprise/payload.json"
+    permissions: "0600"
+    owner: "root:root"
+    content: |
+      {
+        "username": "admin",
+        "email": "it@mycompany.com",
+        "password": "${tfe_admin_password}"
+      }   
+
+  - path: /etc/systemd/system/terraform-enterprise.service
+    permissions: "0644"
+    owner: "root:root"
+    content: |
+      [Unit]
+      Description=Terraform Enterprise Service
+      Requires=docker.service
+      After=docker.service network.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      WorkingDirectory=/etc/terraform-enterprise
+      ExecStart=/usr/bin/docker compose -f /etc/terraform-enterprise/config.yaml up -d
+      ExecStop=/usr/bin/docker compose -f /etc/terraform-enterprise/config.yaml down
+      TimeoutStartSec=0
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: "/usr/local/bin/docker-install.sh"
+    permissions: "0755"
+    owner: "root:root"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      LOG_FILE="/var/log/tfe-bootstrap.log"
+      exec > >(tee -a "$LOG_FILE") 2>&1
+
+      sudo apt update
+      sudo install -m 0755 -d /etc/apt/keyrings
+      sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+      sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+      sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
+      Types: deb
+      URIs: https://download.docker.com/linux/ubuntu
+      Suites: $(. /etc/os-release && echo "$${UBUNTU_CODENAME:-$${VERSION_CODENAME}}")
+      Components: stable
+      Signed-By: /etc/apt/keyrings/docker.asc
+      EOF
+
+      sudo apt update
+      sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  - path: "/usr/local/bin/tfe-bootstrap.sh"
+    permissions: "0755"
+    owner: "root:root"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      LOG_FILE="/var/log/tfe-bootstrap.log"
+      exec > >(tee -a "$LOG_FILE") 2>&1
+
+      echo "==== TFE bootstrap starting ===="
+
+      REGISTRY_TOKEN_FILE="/etc/terraform-enterprise/registry-token"
+      IMAGE_TAG="${tfe_image_tag}"
+
+      echo "Logging into images.releases.hashicorp.com..."
+      cat "$REGISTRY_TOKEN_FILE" | docker login --username terraform images.releases.hashicorp.com --password-stdin
+
+      echo "Pulling TFE image: images.releases.hashicorp.com/hashicorp/terraform-enterprise:${tfe_image_tag}"
+      docker pull "images.releases.hashicorp.com/hashicorp/terraform-enterprise:${tfe_image_tag}"
+
+      echo "Creating Docker Service for TFE..."
+      systemctl daemon-reload
+
+      echo "Starting TFE service via systemd..."
+      systemctl enable --now terraform-enterprise
+
+      echo "==== TFE bootstrap completed ===="
+
+
+  - path: "/usr/local/bin/tfe-admin.sh"
+    permissions: "0755"
+    owner: "root:root"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      LOG_FILE="/var/log/tfe-admin.log"
+      PAYLOAD_FILE="/etc/terraform-enterprise/payload.json"
+      TFE_IMAGE="images.releases.hashicorp.com/hashicorp/terraform-enterprise:${tfe_image_tag}"
+      TFE_HOST=${tfe_hostname}
+
+      exec > >(tee -a "$LOG_FILE") 2>&1
+
+      echo "==== TFE admin creation ===="
+
+      echo "Getting container id..."
+      CONTAINER_ID="$(docker ps --filter "ancestor=$TFE_IMAGE" --format '{{.ID}}' | head -n1)"
+      echo "Container: $CONTAINER_ID"
+
+      echo "Generate token..."
+      TOKEN="$(docker exec "$CONTAINER_ID" tfectl admin token | tr -d '\r\n')"
+
+      echo "Waiting for TFE to become ready..."
+      until curl -k -s -o /dev/null -w "%%{http_code}" \
+        -H "Content-Type: application/json" \
+        --data @"$PAYLOAD_FILE" \
+        "https://$TFE_HOST/admin/initial-admin-user?token=$TOKEN" \
+        | grep -Eq "200|201|409"
+      do
+        echo "TFE not ready yet, retrying in 10 seconds..."
+        sleep 10
+      done
+
+
+      echo "==== TFE admin creation completed ===="
+
+
+runcmd:
+  - mkdir -p /etc/terraform-enterprise/certs
+  - mkdir -p ${data_dir}
+  - bash /usr/local/bin/docker-install.sh
+  - bash /usr/local/bin/tfe-bootstrap.sh
+  - bash /usr/local/bin/tfe-admin.sh
